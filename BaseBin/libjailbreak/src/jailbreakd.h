@@ -46,14 +46,14 @@ mach_port_t jbdMachPort(void);
 xpc_object_t sendJBDMessage(xpc_object_t message);
 
 void jbdGetStatus(uint64_t *PPLRWStatus, uint64_t *kcallStatus, pid_t *pid);
-void jbdTransferPPLRW(uint64_t magicPage);
+void jbdTransferPPLRW(void);
 uint64_t jbdTransferKcall();
 void jbdFinalizeKcall(void);
 
 uint64_t jbdGetPPLRWPage(int64_t* errOut);
 int jbdInitPPLRW(void);
 uint64_t jbdKcallThreadState(KcallThreadState *threadState, bool raw);
-uint64_t jbdKcall(uint64_t func, uint64_t argc, uint64_t *argv);
+uint64_t jbdKcall(uint64_t func, uint64_t argc, const uint64_t *argv);
 uint64_t jbdKcall8(uint64_t func, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8);
 int64_t jbdInitEnvironment(void);
 

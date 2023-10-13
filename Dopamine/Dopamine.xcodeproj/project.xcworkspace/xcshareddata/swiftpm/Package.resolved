@@ -2,20 +2,11 @@
   "object": {
     "pins": [
       {
-        "package": "iDownload",
-        "repositoryURL": "https://github.com/pinauten/iDownload",
-        "state": {
-          "branch": "master",
-          "revision": "62920e864f06af4b0a50a0aa9b6e0a7c7bd83a6f",
-          "version": null
-        }
-      },
-      {
         "package": "KernelPatchfinder",
         "repositoryURL": "https://github.com/opa334/KernelPatchfinder",
         "state": {
           "branch": "master",
-          "revision": "2b8dccec4207613ee6a0939db6e77259d2f1d9fd",
+          "revision": "fb34adb3c55154423cc18ec709fcb713bd67a890",
           "version": null
         }
       },

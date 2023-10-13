@@ -10,8 +10,8 @@ import Fugu15KernelExploit
 
 struct SettingsView: View {
     
-    @AppStorage("totalJailbreaks", store: dopamineDefaults()) var totalJailbreaks: Int = 0
-    @AppStorage("successfulJailbreaks", store: dopamineDefaults()) var successfulJailbreaks: Int = 0
+    @AppStorage("total_jailbreaks", store: dopamineDefaults()) var totalJailbreaks: Int = 0
+    @AppStorage("successful_jailbreaks", store: dopamineDefaults()) var successfulJailbreaks: Int = 0
     
     @AppStorage("verboseLogsEnabled", store: dopamineDefaults()) var verboseLogs: Bool = false
     @AppStorage("tweakInjectionEnabled", store: dopamineDefaults()) var tweakInjection: Bool = true
@@ -48,8 +48,13 @@ struct SettingsView: View {
                                         tweakInjectionToggledAlertShown = true
                                     }
                                 }
+                            Toggle("Settings_iDownload", isOn: $enableiDownload)
+                                .onChange(of: enableiDownload) { newValue in
+                                    if isJailbroken() {
+                                        jailbrokenUpdateIDownloadEnabled()
+                                    }
+                                }
                             if !isJailbroken() {
-                                Toggle("Settings_iDownload", isOn: $enableiDownload)
                                 Toggle("Settings_Verbose_Logs", isOn: $verboseLogs)
                             }
                         }
@@ -115,23 +120,25 @@ struct SettingsView: View {
                                                 .stroke(Color.white.opacity(0.25), lineWidth: 0.5)
                                         )
                                     }
-                                    Button(action: {
-                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                        removeJailbreakAlertShown = true
-                                    }) {
-                                        HStack {
-                                            Image(systemName: "trash")
-                                            Text("Button_Remove_Jailbreak")
-                                                .lineLimit(1)
-                                                .minimumScaleFactor(0.5)
+                                    if !isJailbroken() {
+                                        Button(action: {
+                                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                            removeJailbreakAlertShown = true
+                                        }) {
+                                            HStack {
+                                                Image(systemName: "trash")
+                                                Text("Button_Remove_Jailbreak")
+                                                    .lineLimit(1)
+                                                    .minimumScaleFactor(0.5)
+                                            }
+                                            .padding(.horizontal, 4)
+                                            .padding(8)
+                                            .frame(maxWidth: .infinity)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 8)
+                                                    .stroke(Color.white.opacity(0.25), lineWidth: 0.5)
+                                            )
                                         }
-                                        .padding(.horizontal, 4)
-                                        .padding(8)
-                                        .frame(maxWidth: .infinity)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .stroke(Color.white.opacity(0.25), lineWidth: 0.5)
-                                        )
                                     }
                                     Text(isJailbroken() ? "Hint_Hide_Jailbreak_Jailbroken" : "Hint_Hide_Jailbreak")
                                         .font(.footnote)

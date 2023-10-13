@@ -19,7 +19,22 @@
 #import "update.h"
 #import "forkfix.h"
 
+/*#undef JBLogDebug
+void JBLogDebug(const char *format, ...)
+{
+	va_list va;
+	va_start(va, format);
+
+	FILE *launchdLog = fopen("/var/mobile/jailbreakd-xpc.log", "a");
+	vfprintf(launchdLog, format, va);
+	fprintf(launchdLog, "\n");
+	fclose(launchdLog);
+
+	va_end(va);	
+}*/
+
 kern_return_t bootstrap_check_in(mach_port_t bootstrap_port, const char *service, mach_port_t *server_port);
+SInt32 CFUserNotificationDisplayAlert(CFTimeInterval timeout, CFOptionFlags flags, CFURLRef iconURL, CFURLRef soundURL, CFURLRef localizationURL, CFStringRef alertHeader, CFStringRef alertMessage, CFStringRef defaultButtonTitle, CFStringRef alternateButtonTitle, CFStringRef otherButtonTitle, CFOptionFlags *responseFlags) API_AVAILABLE(ios(3.0));
 
 void setJetsamEnabled(bool enabled)
 {
@@ -28,8 +43,19 @@ void setJetsamEnabled(bool enabled)
 	if (enabled) {
 		priorityToSet = 10;
 	}
-	int rc = memorystatus_control(MEMORYSTATUS_CMD_SET_JETSAM_HIGH_WATER_MARK, me, -1, NULL, 0);
+	int rc = memorystatus_control(MEMORYSTATUS_CMD_SET_JETSAM_HIGH_WATER_MARK, me, priorityToSet, NULL, 0);
 	if (rc < 0) { perror ("memorystatus_control"); exit(rc);}
+}
+
+void setTweaksEnabled(bool enabled)
+{
+	NSString *safeModePath = prebootPath(@"basebin/.safe_mode");
+	if (enabled) {
+		[[NSFileManager defaultManager] removeItemAtPath:safeModePath error:nil];
+	}
+	else {
+		[[NSFileManager defaultManager] createFileAtPath:safeModePath contents:[NSData data] attributes:nil];
+	}
 }
 
 int processBinary(NSString *binaryPath)
@@ -103,8 +129,7 @@ int launchdInitPPLRW(void)
 
 	int error = xpc_dictionary_get_int64(reply, "error");
 	if (error == 0) {
-		uint64_t magicPage = xpc_dictionary_get_uint64(reply, "magicPage");
-		initPPLPrimitives(magicPage);
+		initPPLPrimitives();
 		return 0;
 	}
 	else {
@@ -167,7 +192,7 @@ void jailbreakd_received_message(mach_port_t machPort, bool systemwide)
 			msgId = xpc_dictionary_get_uint64(message, "id");
 
 			char *description = xpc_copy_description(message);
-			JBLogDebug("received %s message %d with dictionary: %s", systemwide ? "systemwide" : "", msgId, description);
+			JBLogDebug("received %s message %d with dictionary: %s (from binary: %s)", systemwide ? "systemwide" : "", msgId, description, proc_get_path(clientPid).UTF8String);
 			free(description);
 
 			BOOL isAllowedSystemWide = msgId == JBD_MSG_PROCESS_BINARY || 
@@ -186,10 +211,7 @@ void jailbreakd_received_message(mach_port_t machPort, bool systemwide)
 					
 					case JBD_MSG_PPL_INIT: {
 						if (gPPLRWStatus == kPPLRWStatusNotInitialized) {
-							uint64_t magicPage = xpc_dictionary_get_uint64(message, "magicPage");
-							if (magicPage) {
-								initPPLPrimitives(magicPage);
-							}
+							initPPLPrimitives();
 						}
 						break;
 					}
@@ -214,14 +236,8 @@ void jailbreakd_received_message(mach_port_t machPort, bool systemwide)
 					
 					case JBD_MSG_HANDOFF_PPL: {
 						if (gPPLRWStatus == kPPLRWStatusInitialized && gKCallStatus == kKcallStatusFinalized) {
-							uint64_t magicPage = 0;
-							int r = handoffPPLPrimitives(clientPid, &magicPage);
-							if (r == 0) {
-								xpc_dictionary_set_uint64(reply, "magicPage", magicPage);
-							}
-							else {
-								xpc_dictionary_set_uint64(reply, "errorCode", r);
-							}
+							int r = handoffPPLPrimitives(clientPid);
+							xpc_dictionary_set_uint64(reply, "errorCode", r);
 						}
 						else {
 							xpc_dictionary_set_uint64(reply, "error", JBD_ERR_PRIMITIVE_NOT_INITIALIZED);
@@ -297,27 +313,30 @@ void jailbreakd_received_message(mach_port_t machPort, bool systemwide)
 					}
 
 					case JBD_MSG_JBUPDATE: {
-						int64_t result = 0;
-						if (gPPLRWStatus == kPPLRWStatusInitialized && gKCallStatus == kKcallStatusFinalized) {
-							const char *basebinPath = xpc_dictionary_get_string(message, "basebinPath");
-							const char *tipaPath = xpc_dictionary_get_string(message, "tipaPath");
-							bool rebootWhenDone = xpc_dictionary_get_bool(message, "rebootWhenDone");
+						dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+							int64_t result = 0;
+							if (gPPLRWStatus == kPPLRWStatusInitialized && gKCallStatus == kKcallStatusFinalized) {
+								const char *basebinPath = xpc_dictionary_get_string(message, "basebinPath");
+								const char *tipaPath = xpc_dictionary_get_string(message, "tipaPath");
+								bool rebootWhenDone = xpc_dictionary_get_bool(message, "rebootWhenDone");
 
-							if (basebinPath) {
-								result = basebinUpdateFromTar([NSString stringWithUTF8String:basebinPath], rebootWhenDone);
-							}
-							else if (tipaPath) {
-								result = jbUpdateFromTIPA([NSString stringWithUTF8String:tipaPath], rebootWhenDone);
+								if (basebinPath) {
+									result = basebinUpdateFromTar([NSString stringWithUTF8String:basebinPath], rebootWhenDone);
+								}
+								else if (tipaPath) {
+									result = jbUpdateFromTIPA([NSString stringWithUTF8String:tipaPath], rebootWhenDone);
+								}
+								else {
+									result = 101;
+								}
 							}
 							else {
-								result = 101;
+								result = JBD_ERR_PRIMITIVE_NOT_INITIALIZED;
 							}
-						}
-						else {
-							result = JBD_ERR_PRIMITIVE_NOT_INITIALIZED;
-						}
-						xpc_dictionary_set_int64(reply, "result", result);
-						break;
+							xpc_dictionary_set_int64(reply, "result", result);
+							xpc_pipe_routine_reply(reply);
+						});
+						return;
 					}
 
 
@@ -365,7 +384,8 @@ void jailbreakd_received_message(mach_port_t machPort, bool systemwide)
 						int64_t result = 0;
 						if (gPPLRWStatus == kPPLRWStatusInitialized && gKCallStatus == kKcallStatusFinalized) {
 							pid_t pid = xpc_dictionary_get_int64(message, "pid");
-							result = proc_set_debugged(pid);
+							JBLogDebug("setting other process %s as debugged", proc_get_path(pid).UTF8String);
+							result = proc_set_debugged_pid(pid, true);
 						}
 						else {
 							result = JBD_ERR_PRIMITIVE_NOT_INITIALIZED;
@@ -377,7 +397,7 @@ void jailbreakd_received_message(mach_port_t machPort, bool systemwide)
 					case JBD_MSG_DEBUG_ME: {
 						int64_t result = 0;
 						if (gPPLRWStatus == kPPLRWStatusInitialized && gKCallStatus == kKcallStatusFinalized) {
-							result = proc_set_debugged(clientPid);
+							result = proc_set_debugged_pid(clientPid, false);
 						}
 						else {
 							result = JBD_ERR_PRIMITIVE_NOT_INITIALIZED;
@@ -390,8 +410,7 @@ void jailbreakd_received_message(mach_port_t machPort, bool systemwide)
 						int64_t result = 0;
 						if (gPPLRWStatus == kPPLRWStatusInitialized && gKCallStatus == kKcallStatusFinalized) {
 							pid_t childPid = xpc_dictionary_get_int64(message, "childPid");
-							bool mightHaveDirtyPages = xpc_dictionary_get_bool(message, "mightHaveDirtyPages");
-							result = apply_fork_fixup(clientPid, childPid, mightHaveDirtyPages);
+							result = apply_fork_fixup(clientPid, childPid);
 						}
 						else {
 							result = JBD_ERR_PRIMITIVE_NOT_INITIALIZED;
@@ -407,6 +426,8 @@ void jailbreakd_received_message(mach_port_t machPort, bool systemwide)
 							if (messageString) {
 								dumpUserspacePanicLog(messageString);
 							}
+							setTweaksEnabled(false);
+							bootInfo_setObject(@"jbdShowUserspacePanicMessage", @1);
 							reboot3(RB2_USERREBOOT);
 						}
 						xpc_dictionary_set_int64(reply, "result", result);
@@ -449,7 +470,6 @@ int main(int argc, char* argv[])
 
 		gTCPages = [NSMutableArray new];
 		gTCUnusedAllocations = [NSMutableArray new];
-		gTCAccessQueue = dispatch_queue_create("com.opa334.jailbreakd.tcAccessQueue", DISPATCH_QUEUE_SERIAL);
 
 		mach_port_t machPort = 0;
 		kern_return_t kr = bootstrap_check_in(bootstrap_port, "com.opa334.jailbreakd", &machPort);
@@ -486,6 +506,11 @@ int main(int argc, char* argv[])
 			if (bootInfo_getUInt64(@"jbdIconCacheNeedsRefresh")) {
 				spawn(prebootPath(@"usr/bin/uicache"), @[@"-a"]);
 				bootInfo_setObject(@"jbdIconCacheNeedsRefresh", nil);
+			}
+
+			if (bootInfo_getUInt64(@"jbdShowUserspacePanicMessage")) {
+				CFUserNotificationDisplayAlert(0, 2/*kCFUserNotificationCautionAlertLevel*/, NULL, NULL, NULL, CFSTR("Watchdog Timeout"), CFSTR("Dopamine has protected you from a userspace panic by temporarily disabling tweak injection and triggering a userspace reboot instead. A detailed log is available under Analytics in the Preferences app. You can reenable tweak injection in the Dopamine app."), NULL, NULL, NULL, NULL);
+				bootInfo_setObject(@"jbdShowUserspacePanicMessage", nil);
 			}
 		});
 

@@ -38,7 +38,6 @@ typedef struct {
 } Fugu14KcallThread;
 
 static void* gThreadMapContext;
-static uint8_t* gThreadMapStart;
 static Fugu14KcallThread gFugu14KcallThread;
 KcallStatus gKCallStatus = kKcallStatusNotInitialized;
 
@@ -46,6 +45,7 @@ KcallStatus gKCallStatus = kKcallStatusNotInitialized;
 
 uint64_t gUserReturnThreadContext = 0;
 volatile uint64_t gUserReturnDidHappen = 0;
+static NSLock *gKcallLock;
 
 uint64_t getUserReturnThreadContext(void) {
 	if (gUserReturnThreadContext != 0) {
@@ -112,6 +112,8 @@ void Fugu14Kcall_prepareThreadState(Fugu14KcallThread *callThread, KcallThreadSt
 
 uint64_t Fugu14Kcall_withThreadState(Fugu14KcallThread *callThread, KcallThreadState *threadState)
 {
+	[gKcallLock lock];
+
 	// Restore signed state first
 	kwritebuf(callThread->actContext, &callThread->signedState, sizeof(kRegisterState));
 	
@@ -143,18 +145,24 @@ uint64_t Fugu14Kcall_withThreadState(Fugu14KcallThread *callThread, KcallThreadS
 	// Sync all changes
 	// (Probably not required)
 	MEMORY_BARRIER
-	
+
 	// Copy return value
-	return callThread->scratchMemoryMapped[0];
+	uint64_t retval = callThread->scratchMemoryMapped[0];
+
+	[gKcallLock unlock];
+	
+	return retval;
 }
 
-uint64_t Fugu14Kcall_withArguments(Fugu14KcallThread *callThread, uint64_t func, uint64_t argc, uint64_t *argv)
+uint64_t Fugu14Kcall_withArguments(Fugu14KcallThread *callThread, uint64_t func, uint64_t argc, const uint64_t *argv)
 {
 	if (argc >= 19) argc = 19;
 
 	KcallThreadState threadState = { 0 };
 	Fugu14Kcall_prepareThreadState(&gFugu14KcallThread, &threadState);
 	threadState.pc = func;
+
+	[gKcallLock lock];
 
 	uint64_t regArgc = 0;
 	uint64_t stackArgc = 0;
@@ -179,10 +187,12 @@ uint64_t Fugu14Kcall_withArguments(Fugu14KcallThread *callThread, uint64_t func,
 		kwrite64(argKaddr, argv[8+i]);
 	}
 
+	[gKcallLock unlock];
+
 	return Fugu14Kcall_withThreadState(callThread, &threadState);
 }
 
-uint64_t kcall(uint64_t func, uint64_t argc, uint64_t *argv)
+uint64_t kcall(uint64_t func, uint64_t argc, const uint64_t *argv)
 {
 	if (gKCallStatus != kKcallStatusFinalized) {
 		if (gIsJailbreakd) return 0;
@@ -223,6 +233,8 @@ uint64_t initPACPrimitives(uint64_t kernelAllocation)
 		return 0;
 	}
 
+	gKcallLock = [[NSLock alloc] init];
+
 	thread_t thread = 0;
 	kern_return_t kr = thread_create(mach_task_self_, &thread);
 	if (kr != KERN_SUCCESS) {
@@ -242,13 +254,6 @@ uint64_t initPACPrimitives(uint64_t kernelAllocation)
 	if (threadPtr == 0) {
 		JBLogError("[-] setupFugu14Kcall: Failed to get thread ACT_CONTEXT!");
 		return false;
-	}
-
-	// Map in previously allocated memory for stack (4 Pages)
-	gThreadMapContext = mapInRange(kernelAllocation, 4, &gThreadMapStart);
-	if (!gThreadMapContext)
-	{
-		JBLogError("ERROR: gThreadMapContext lookup failure");
 	}
 
 	// stack is at middle of allocation
@@ -279,14 +284,14 @@ uint64_t initPACPrimitives(uint64_t kernelAllocation)
 	// Include in signed state since it is rarely changed
 	kwrite64(actContext + offsetof(kRegisterState, x[2]), get_cspr_kern_intr_en());
 
-	kRegisterState *mappedState = (kRegisterState*)((uintptr_t)gThreadMapStart + 0x8000ULL);
+	kRegisterState *mappedState = kvtouaddr(stack);
 
 	gFugu14KcallThread.thread              = thread;
 	gFugu14KcallThread.kernelStack         = stack;
 	gFugu14KcallThread.scratchMemory       = stack + 0x7000ULL;
 	gFugu14KcallThread.mappedState         = mappedState;
 	gFugu14KcallThread.actContext          = actContext;
-	gFugu14KcallThread.scratchMemoryMapped = (uint64_t*) ((uintptr_t)gThreadMapStart + 0xF000ULL);
+	gFugu14KcallThread.scratchMemoryMapped = kvtouaddr(kernelAllocation + 0xF000ULL);
 
 	gKCallStatus = kKcallStatusPrepared;
 
@@ -304,8 +309,7 @@ void finalizePACPrimitives(void)
 
 	uint64_t actContext = gFugu14KcallThread.actContext;
 	thread_t thread = gFugu14KcallThread.thread;
-
-	kRegisterState *mappedState = (kRegisterState*)((uintptr_t)gThreadMapStart + 0x8000ULL);
+	kRegisterState *mappedState = gFugu14KcallThread.mappedState;
 
 	// Create a copy of signed state
 	kreadbuf(actContext, &gFugu14KcallThread.signedState, sizeof(kRegisterState));
@@ -467,9 +471,4 @@ int recoverPACPrimitives()
 	// If everything went well, finalize and return success
 	finalizePACPrimitives();
 	return 0;
-}
-
-void destroyPACPrimitives(void)
-{
-	// TODO
 }
